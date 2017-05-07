@@ -152,7 +152,7 @@ def login(username, password, pincode):
 
 if __name__ == "__main__":
 
-    username = "你的用户名"
-    password = "你的密码"
+    username = raw_input("你的用户名:").strip()
+    password = raw_input("你的密码:").strip()
     pincode = login_pre(username)
     login(username, password, pincode)

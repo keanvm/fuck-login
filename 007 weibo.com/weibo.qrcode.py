@@ -19,6 +19,7 @@ import sys
 try:
     from PIL import Image
 except:
+    print ("shit")
     pass
 import threading
 

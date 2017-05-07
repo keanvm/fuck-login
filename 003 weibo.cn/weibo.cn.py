@@ -12,6 +12,7 @@ Info
 考虑到 weibo.cn 变态的验证码，放弃这种浪费生命的方式吧，
 2016.4.8
 '''
+import json
 import requests
 import re
 from PIL import Image
@@ -34,9 +35,9 @@ url_login = 'https://weibo.cn/login/'
 
 def get_params(url_login):
     html = session.get(url_login, headers=headers)
-    # print(html.text)
-    pattern = r'action="(*?)".*?type="password" name="(.*?)".*?name="vk"\
-                 value="(.*?)".*?name="capId" value="(.*?)"'
+    print(html.text)
+    print(html.headers)
+    pattern = r'action="(.*?)".*?type="password" name="(.*?)".*?name="vk" value="(.*?)".*?name="capId" value="(.*?)"'
     res = re.findall(pattern, html.text, re.S)
     # print(res)
     return res
@@ -88,6 +89,8 @@ if __name__ == "__main__":
     # print(post_url)
     page = session.post(post_url, data=postdata, headers=headers)
     index = session.get("http://weibo.cn")
-    print(index.text)
+    cookies = session.cookies.get_dict()
+    print(json.dumps(cookies))
+
     # cookies = requests.utils.dict_from_cookiejar(session.cookies)
     # print(cookies)

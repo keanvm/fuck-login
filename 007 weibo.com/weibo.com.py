@@ -1,170 +1,181 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-'''
-Required
-- requests (必须)
-- rsa (必须)
-- pillow (可选)
-Info
-- author : "xchaoinfo"
-- email  : "xchaoinfo@qq.com"
-- date   : "2016.3.7"
-'''
-import time
 import base64
-import rsa
 import binascii
-import requests
-import re
+import codecs
+import json
+import logging
 import random
-try:
-    from PIL import Image
-except:
-    pass
-try:
-    from urllib.parse import quote_plus
-except:
-    from urllib import quote_plus
+import re
+import rsa
+import time
 
-'''
-如果没有开启登录保护，不用输入验证码就可以登录
-如果开启登录保护，需要输入验证码
-
-'''
+import requests
+from urllib import quote_plus
 
 
-# 构造 Request headers
-agent = 'Mozilla/5.0 (Windows NT 6.3; WOW64; rv:41.0) Gecko/20100101 Firefox/41.0'
-headers = {
-    'User-Agent': agent
-}
+class WeiboComLogin(object):
+    AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.81 Safari/537.36'
+    HEADERS = {'User-Agent': AGENT}
+    INIT_URL = "http://weibo.com/login.php"
+    LOGIN_URL = 'http://login.sina.com.cn/sso/login.php?client=ssologin.js(v1.4.18)'
 
-session = requests.session()
+    def __init__(self, username, password, timeout=3):
+        self.username = username
+        self.password = password
+        self.session = requests.Session()
+        self.timeout = timeout
+        self.headers = WeiboComLogin.HEADERS.copy()
+        self.response = None
+        self.server_data = None
+        self.uuid = None
+        self.user_nick_name = None
+        self.get(WeiboComLogin.INIT_URL)
 
-# 访问 初始页面带上 cookie
-index_url = "http://weibo.com/login.php"
-try:
-    session.get(index_url, headers=headers, timeout=2)
-except:
-    session.get(index_url, headers=headers)
-try:
-    input = raw_input
-except:
-    pass
+    def get(self, url, headers=None, cookies=None, timeout=None):
+        if headers is None:
+            headers = self.headers
+        if timeout is None:
+            timeout = self.timeout
+        if cookies is None:
+            self.response = self.session.get(
+                url=url, headers=headers, timeout=timeout)
+        else:
+            self.response = self.session.get(
+                url=url, headers=headers, timeout=timeout, cookies=cookies)
+        logging.info("[#] POST STATUS: %s, URL: %s ",
+                     self.response.status_code, self.response.url)
+        return self.response
 
+    def post(self, url, data, headers=None, cookies=None, timeout=None):
+        if headers is None:
+            headers = self.headers
+        if timeout is None:
+            timeout = self.timeout
+        if cookies is None:
+            self.response = self.session.post(
+                url=url, headers=headers, timeout=timeout, data=data)
+        else:
+            self.response = self.session.post(
+                url=url, headers=headers, timeout=timeout, data=data, cookies=cookies)
+        logging.info("[#] POST STATUS: %s, URL: %s ",
+                     self.response.status_code, self.response.url)
+        return self.response
 
-def get_su(username):
-    """
-    对 email 地址和手机号码 先 javascript 中 encodeURIComponent
-    对应 Python 3 中的是 urllib.parse.quote_plus
-    然后在 base64 加密后decode
-    """
-    username_quote = quote_plus(username)
-    username_base64 = base64.b64encode(username_quote.encode("utf-8"))
-    return username_base64.decode("utf-8")
+    def _prelogin(self):
+        url = "http://login.sina.com.cn/sso/prelogin.php?entry=weibo&callback=sinaSSOController.preloginCallBack&su="
+        url = url + self.su + \
+            "&rsakt=mod&checkpin=1&client=ssologin.js(v1.4.18)&_=" + str(
+                int(time.time() * 1000))
+        res = self.get(url)
+        return eval(res.content.decode("utf-8").replace("sinaSSOController.preloginCallBack", ''))
 
+    @property
+    def su(self):
+        username_quote = quote_plus(self.username)
+        username_base64 = base64.b64encode(username_quote.encode("utf-8"))
+        return username_base64.decode("utf-8")
 
-# 预登陆获得 servertime, nonce, pubkey, rsakv
-def get_server_data(su):
-    pre_url = "http://login.sina.com.cn/sso/prelogin.php?entry=weibo&callback=sinaSSOController.preloginCallBack&su="
-    pre_url = pre_url + su + "&rsakt=mod&checkpin=1&client=ssologin.js(v1.4.18)&_="
-    pre_url = pre_url + str(int(time.time() * 1000))
-    pre_data_res = session.get(pre_url, headers=headers)
+    def _get_password(self, servertime, nonce, pubkey):
+        rsaPublickey = int(pubkey, 16)
+        key = rsa.PublicKey(rsaPublickey, 65537)  # create rsa public key
+        data = str(servertime) + '\t' + str(nonce) + \
+            '\n' + str(self.password)  # get data
+        # encrypt
+        return binascii.b2a_hex(rsa.encrypt(data.encode("utf-8"), key))
 
-    sever_data = eval(pre_data_res.content.decode("utf-8").replace("sinaSSOController.preloginCallBack", ''))
+    def get_captcha(self, pcid):
+        cha_url = "http://login.sina.com.cn/cgi/pin.php?r="
+        cha_url = cha_url + \
+            str(int(random.random() * 100000000)) + "&s=0&p=" + pcid
+        return self.get(cha_url, headers=headers).content
 
-    return sever_data
+    def prelogin(self):
+        self.server_data = self._prelogin()
+        showpin = self.server_data["showpin"]
+        if showpin:  # have captcha
+            return self.get_captcha(self.server_data["pcid"])
+        else:
+            return None
 
+    def get_json_cookies(self):
+        cookies = [ck.__dict__ for ck in self.session.cookies]
+        return json.dumps(cookies)
 
-# print(sever_data)
-
-
-def get_password(password, servertime, nonce, pubkey):
-    rsaPublickey = int(pubkey, 16)
-    key = rsa.PublicKey(rsaPublickey, 65537)  # 创建公钥
-    message = str(servertime) + '\t' + str(nonce) + '\n' + str(password)  # 拼接明文js加密文件中得到
-    message = message.encode("utf-8")
-    passwd = rsa.encrypt(message, key)  # 加密
-    passwd = binascii.b2a_hex(passwd)  # 将加密信息转换为16进制。
-    return passwd
-
-
-def get_cha(pcid):
-    cha_url = "http://login.sina.com.cn/cgi/pin.php?r="
-    cha_url = cha_url + str(int(random.random() * 100000000)) + "&s=0&p="
-    cha_url = cha_url + pcid
-    cha_page = session.get(cha_url, headers=headers)
-    with open("cha.jpg", 'wb') as f:
-        f.write(cha_page.content)
-        f.close()
-    try:
-        im = Image.open("cha.jpg")
-        im.show()
-        im.close()
-    except:
-        print(u"请到当前目录下，找到验证码后输入")
-
-
-def login(username, password):
-    # su 是加密后的用户名
-    su = get_su(username)
-    sever_data = get_server_data(su)
-    servertime = sever_data["servertime"]
-    nonce = sever_data['nonce']
-    rsakv = sever_data["rsakv"]
-    pubkey = sever_data["pubkey"]
-    showpin = sever_data["showpin"]
-    password_secret = get_password(password, servertime, nonce, pubkey)
-
-    postdata = {
-        'entry': 'weibo',
-        'gateway': '1',
-        'from': '',
-        'savestate': '7',
-        'useticket': '1',
-        'pagerefer': "http://login.sina.com.cn/sso/logout.php?entry=miniblog&r=http%3A%2F%2Fweibo.com%2Flogout.php%3Fbackurl",
-        'vsnf': '1',
-        'su': su,
-        'service': 'miniblog',
-        'servertime': servertime,
-        'nonce': nonce,
-        'pwencode': 'rsa2',
-        'rsakv': rsakv,
-        'sp': password_secret,
-        'sr': '1366*768',
-        'encoding': 'UTF-8',
-        'prelt': '115',
-        'url': 'http://weibo.com/ajaxlogin.php?framelogin=1&callback=parent.sinaSSOController.feedBackUrlCallBack',
-        'returntype': 'META'
+    def _get_login_post_data(self):
+        servertime = self.server_data["servertime"]
+        nonce = self.server_data['nonce']
+        rsakv = self.server_data["rsakv"]
+        pubkey = self.server_data["pubkey"]
+        return {
+            'entry': 'weibo',
+            'gateway': '1',
+            'from': '',
+            'savestate': '7',
+            'useticket': '1',
+            'pagerefer': "http://login.sina.com.cn/sso/logout.php?entry=miniblog&r=http%3A%2F%2Fweibo.com%2Flogout.php%3Fbackurl",
+            'vsnf': '1',
+            'su': self.su,
+            'service': 'miniblog',
+            'servertime': servertime,
+            'nonce': nonce,
+            'pwencode': 'rsa2',
+            'rsakv': rsakv,
+            'sp': self._get_password(servertime, nonce, pubkey),
+            'sr': '1366*768',
+            'encoding': 'UTF-8',
+            'prelt': '115',
+            'url': 'http://weibo.com/ajaxlogin.php?framelogin=1&callback=parent.sinaSSOController.feedBackUrlCallBack',
+            'returntype': 'META'
         }
-    login_url = 'http://login.sina.com.cn/sso/login.php?client=ssologin.js(v1.4.18)'
-    if showpin == 0:
-        login_page = session.post(login_url, data=postdata, headers=headers)
-    else:
-        pcid = sever_data["pcid"]
-        get_cha(pcid)
-        postdata['door'] = input(u"请输入验证码")
-        login_page = session.post(login_url, data=postdata, headers=headers)
-    login_loop = (login_page.content.decode("GBK"))
-    # print(login_loop)
-    pa = r'location\.replace\([\'"](.*?)[\'"]\)'
-    loop_url = re.findall(pa, login_loop)[0]
-    # print(loop_url)
-    # 此出还可以加上一个是否登录成功的判断，下次改进的时候写上
-    login_index = session.get(loop_url, headers=headers)
-    uuid = login_index.text
-    uuid_pa = r'"uniqueid":"(.*?)"'
-    uuid_res = re.findall(uuid_pa, uuid, re.S)[0]
-    web_weibo_url = "http://weibo.com/%s/profile?topnav=1&wvr=6&is_all=1" % uuid_res
-    weibo_page = session.get(web_weibo_url, headers=headers)
-    weibo_pa = r'<title>(.*?)</title>'
-    # print(weibo_page.content.decode("utf-8"))
-    userID = re.findall(weibo_pa, weibo_page.content.decode("utf-8", 'ignore'), re.S)[0]
-    print(u"欢迎你 %s, 你在正在使用 xchaoinfo 写的模拟登录微博" % userID)
 
+    def login(self, captcha=None):
+        if self.server_data is None:
+            raise ValueError("call prelogin first")
+        postdata = self._get_login_post_data()
+        if captcha is not None:
+            postdata["door"] = captcha
+        login_page = self.post(self.LOGIN_URL, data=postdata)
+        content = login_page.content.decode("GBK")
+        self.server_data = None
+        try:
+            location = re.findall(
+                r'location\.replace\([\'"](.*?)[\'"]\)', content)[0]
+            page = self.get(location).text
+            self.uuid = re.findall(r'"uniqueid":"(.*?)"', page, re.S)[0]
+            web_weibo_url = "http://weibo.com/%s/profile?topnav=1&wvr=6&is_all=1" % uuid
+            profile_page = self.get(web_weibo_url)
+            profile_content = profile_page.content.decode("utf-8", 'ignore')
+            self.user_nick_name = re.findall(
+                r'<title>(.*?)</title>', profile_content, re.S)[0]
+            logging.info("user: %s uuid: %s, nickname: %s login successfully", self.username,
+                         self.uuid, self.user_nick_name)
+            return True
+        except Exception as e:
+            logging.exception("login failed: %s", e)
+            return False
 
+    def test(self):
+        captcha, captcha_value = self.prelogin(), None
+        if captcha is not None:
+            with open(self.username + ".jpg", "wb") as fl:
+                fl.write(captcha)
+            captcha_value = input("Captcha Value:")
+        self.login(captcha_value)
+
+SITE_NAME = "weibo"
+ACCOUNTS_FILE = "../accounts.local.json"
+
+def main():
+    logging.root.setLevel(logging.INFO)
+    accounts = json.load(codecs.open(ACCOUNTS_FILE, "r", "utf-8"), "utf-8").get(SITE_NAME, [])
+    for item in accounts:
+        usr, pwd= item["username"], item["password"]
+        logging.info("Login Account: %s, Password: %s", usr, pwd)
+        weibo = WeiboComLogin(username=usr, password=pwd)
+        weibo.test()
+        weibo.get("http://weibo.cn")
+        cookies = weibo.get_json_cookies()
+    
 if __name__ == "__main__":
-    username = input(u'用户名：')
-    password = input(u'密码：')
-    login(username, password)
-
+    main()
